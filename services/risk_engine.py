@@ -1,65 +1,79 @@
 from datetime import datetime
 
-def compute_context_score(time_str: str, location_anomaly: bool, behavior_flags: dict) -> int:
-    """Calculate context risk score (0-100)"""
-    score = 0
 
-    # Time anomaly — late night or early morning
-    if time_str:
-        try:
-            hour = datetime.fromisoformat(time_str).hour
-            if 22 <= hour or hour <= 5:
-                score += 35  # Late night/early morning = high risk
-            elif 20 <= hour <= 21:
-                score += 15
-        except:
-            pass
+def compute_final_score(
+    semantic_score: int,
+    hour: int = None,
+    unusual_location: bool = False,
+    message: str = ""
+) -> dict:
 
-    # Location anomaly
-    if location_anomaly:
-        score += 30
+    context_bonus = 0
+    context_reasons = []
 
-    # Behavior flags
-    if behavior_flags.get("unusual_reassurance"):
-        score += 20
-    if behavior_flags.get("communication_restriction"):
-        score += 25
-    if behavior_flags.get("repeat_pattern"):
-        score += 15
+    if hour is None:
+        hour = datetime.now().hour
 
-    return min(score, 100)
+    # Late night / early morning (10 PM – 5 AM)
+    if hour >= 22 or hour <= 5:
+        context_bonus += 15
+        context_reasons.append("late-night message")
 
-def compute_final_score(semantic_score: int, context_score: int) -> dict:
-    """Fuse semantic AI score with contextual signals"""
-    # Weighted formula: 55% semantic (AI), 45% context (behavioral)
-    final = int(0.55 * semantic_score + 0.45 * context_score)
-    final = min(final, 100)
+    # Unusual location
+    if unusual_location:
+        context_bonus += 15
+        context_reasons.append("unusual location detected")
 
-    # Risk level thresholds
-    if final >= 70:
+    # Excessive reassurance pattern
+    reassurance_words = [
+        "don't worry", "i'm fine", "worry pannadhe",
+        "tension padathe", "everything is fine", "i'm okay",
+        "be fine", "pannadhe", "bayapadathe", "periya vishayam illa"
+    ]
+    if any(w in message.lower() for w in reassurance_words):
+        context_bonus += 10
+        context_reasons.append("excessive reassurance pattern")
+
+    # Communication restriction pattern
+    comm_words = [
+        "charge kammi", "battery low", "phone off",
+        "can't call", "going offline", "won't reply",
+        "call pannala", "pesa mudiyathu"
+    ]
+    if any(w in message.lower() for w in comm_words):
+        context_bonus += 10
+        context_reasons.append("communication restriction pattern")
+
+    # Isolation / exit-limiting language
+    isolation_words = [
+        "don't come", "stay there", "i'll manage",
+        "no need to come", "varadheenga", "varaadhey"
+    ]
+    if any(w in message.lower() for w in isolation_words):
+        context_bonus += 10
+        context_reasons.append("isolation or exit-limiting phrase")
+
+    # ── Scoring formula ──────────────────────────────────────
+    # semantic carries 70%, context carries 60%, base offset 10
+    # Both high semantic AND high context = reliably HIGH risk
+    final_score = min(100, int(
+        (semantic_score * 0.70) +
+        (context_bonus  * 0.60) +
+        10
+    ))
+
+    # Risk thresholds
+    if final_score >= 70:
         risk_level = "high"
-    elif final >= 40:
+    elif final_score >= 45:
         risk_level = "medium"
     else:
         risk_level = "low"
 
     return {
-        "final_score": final,
-        "risk_level": risk_level,
-        "should_alert": final >= 70
+        "semantic_score":   semantic_score,
+        "context_bonus":    context_bonus,
+        "context_reasons":  context_reasons,
+        "final_score":      final_score,
+        "risk_level":       risk_level
     }
-
-def extract_behavior_flags(message: str, signals: list) -> dict:
-    """Extract behavioral patterns from message"""
-    message_lower = message.lower()
-    flags = {}
-
-    reassurance_words = ["don't worry", "i'm fine", "everything ok", "be fine", "worry pannadhe", "naan fine"]
-    flags["unusual_reassurance"] = any(w in message_lower for w in reassurance_words)
-
-    restriction_words = ["phone off", "battery low", "won't call", "can't talk", "charge kammi"]
-    flags["communication_restriction"] = any(w in message_lower for w in restriction_words)
-
-    flags["repeat_pattern"] = len(signals) >= 3
-
-    return flags

@@ -1,96 +1,97 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
+from services.gemini_service import analyze_message
+from services.risk_engine import compute_final_score
+from services.alert_service import trigger_alert
+from database import get_db
 from datetime import datetime
 import json
 
-from services.gemini_service import analyze_message
-from services.risk_engine import compute_context_score, compute_final_score, extract_behavior_flags
-from services.alert_service import send_sms_alert
-from database import get_connection
-
 router = APIRouter()
 
-class AnalyzeRequest(BaseModel):
+
+class MessageRequest(BaseModel):
     message: str
-    time: Optional[str] = None
-    location_lat: Optional[float] = None
-    location_lng: Optional[float] = None
-    location_anomaly: Optional[bool] = False
-    user_name: Optional[str] = "User"
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    unusual_location: bool = False
+
 
 @router.post("/analyze-message")
-def analyze_message_endpoint(req: AnalyzeRequest):
-    # Step 1: Get AI semantic analysis
+def analyze(req: MessageRequest):
+
+    # Step 1: AI distress analysis
     ai_result = analyze_message(req.message)
-    semantic_score = ai_result.get("semantic_score", 0)
-    signals = ai_result.get("signals", [])
 
-    # Step 2: Extract behavior flags
-    behavior_flags = extract_behavior_flags(req.message, signals)
-
-    # Step 3: Calculate context score
-    time_str = req.time or datetime.now().isoformat()
-    context_score = compute_context_score(
-        time_str,
-        req.location_anomaly or False,
-        behavior_flags
+    # Step 2: Context risk scoring
+    risk = compute_final_score(
+        semantic_score=ai_result["semantic_score"],
+        hour=datetime.now().hour,
+        unusual_location=req.unusual_location,
+        message=req.message
     )
 
-    # Step 4: Calculate final risk score
-    risk_data = compute_final_score(semantic_score, context_score)
-    final_score = risk_data["final_score"]
-    risk_level = risk_data["risk_level"]
-    should_alert = risk_data["should_alert"]
-
-    # Step 5: Save to database
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO alerts 
-        (message_text, semantic_score, context_score, final_score, 
-         risk_level, signals, location_lat, location_lng, alert_sent)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        req.message, semantic_score, context_score, final_score,
-        risk_level, json.dumps(signals),
-        req.location_lat, req.location_lng,
-        1 if should_alert else 0
-    ))
-    conn.commit()
-    alert_id = cursor.lastrowid
-    conn.close()
-
-    # Step 6: Send alerts if high risk
-    alert_results = []
-    if should_alert:
-        conn = get_connection()
-        contacts = conn.execute("SELECT * FROM trusted_contacts").fetchall()
-        conn.close()
-        
-        for contact in contacts:
-            result = send_sms_alert(
-                contact["phone"], contact["name"],
-                req.user_name, risk_level, signals,
-                req.location_lat, req.location_lng
-            )
-            alert_results.append({
-                "contact": contact["name"], 
-                "sent": result,
-                "phone": contact["phone"]
-            })
-
-    # Step 7: Return response
-    return {
-        "alert_id": alert_id,
-        "semantic_score": semantic_score,
-        "context_score": context_score,
-        "final_score": final_score,
-        "risk_level": risk_level,
-        "signals": signals,
-        "hidden_distress_reason": ai_result.get("hidden_distress_reason"),
-        "confidence": ai_result.get("confidence", "low"),
-        "recommended_action": ai_result.get("recommended_action", "monitor"),
-        "alert_triggered": should_alert,
-        "alert_results": alert_results
+    # Step 3: Build final response
+    final_result = {
+        **ai_result,
+        "final_score":    risk["final_score"],
+        "risk_level":     risk["risk_level"],
+        "context_bonus":  risk["context_bonus"],
+        "context_reasons": risk["context_reasons"],
+        "lat": req.lat,
+        "lng": req.lng,
+        "alert_sent": False,
+        "alert_channels": ""
     }
+
+    # Step 4: Save to DB
+    alert_id = None
+    try:
+        conn = get_db()
+        cursor = conn.execute("""
+            INSERT INTO alerts (
+                message_text, semantic_score, context_bonus, final_score,
+                risk_level, signals, explanation, lat, lng,
+                unusual_location, alert_sent, alert_channels
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '')
+        """, (
+            req.message,
+            ai_result["semantic_score"],
+            risk["context_bonus"],
+            risk["final_score"],
+            risk["risk_level"],
+            json.dumps(ai_result["signals"]),
+            ai_result.get("hidden_distress_reason", ""),
+            req.lat,
+            req.lng,
+            int(req.unusual_location),
+        ))
+        alert_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        print(f"💾 Alert saved to DB — ID {alert_id}")
+    except Exception as e:
+        print(f"⚠️ DB save failed: {e}")
+
+    # Step 5: Trigger alert if medium or high risk
+    if risk["risk_level"] in ("high", "medium") and risk["final_score"] >= 60:
+        try:
+            alert_sent = trigger_alert(final_result)
+            final_result["alert_sent"] = alert_sent
+            final_result["alert_channels"] = "email" if alert_sent else "demo_log"
+
+            # Update DB row with sent status
+            if alert_id:
+                conn = get_db()
+                conn.execute(
+                    "UPDATE alerts SET alert_sent = ?, alert_channels = ? WHERE id = ?",
+                    (1 if alert_sent else 0, final_result["alert_channels"], alert_id)
+                )
+                conn.commit()
+                conn.close()
+
+        except Exception as e:
+            print(f"⚠️ Alert trigger failed: {e}")
+
+    return final_result

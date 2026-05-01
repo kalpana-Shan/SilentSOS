@@ -1,66 +1,41 @@
+# routes/history.py
 from fastapi import APIRouter
-from database import get_connection
+from database import get_db
 import json
 
 router = APIRouter()
 
 @router.get("/alerts")
 def get_alerts():
-    """Get all alert history"""
-    conn = get_connection()
-    rows = conn.execute(
+    conn = get_db()
+    alerts = conn.execute(
         "SELECT * FROM alerts ORDER BY created_at DESC LIMIT 50"
     ).fetchall()
     conn.close()
-    
+
     result = []
-    for row in rows:
-        r = dict(row)
-        # Parse signals JSON string back to list
-        if r["signals"]:
-            try:
-                r["signals"] = json.loads(r["signals"])
-            except:
-                r["signals"] = []
-        else:
-            r["signals"] = []
-        result.append(r)
-    
+    for a in alerts:
+        alert = dict(a)
+        try:
+            alert["signals"] = json.loads(alert["signals"]) if alert["signals"] else []
+        except:
+            alert["signals"] = []
+        result.append(alert)
     return result
 
 @router.get("/alerts/stats")
 def get_stats():
-    """Get alert statistics"""
-    conn = get_connection()
-    
-    total = conn.execute("SELECT COUNT(*) as count FROM alerts").fetchone()
-    high = conn.execute("SELECT COUNT(*) as count FROM alerts WHERE risk_level='high'").fetchone()
-    medium = conn.execute("SELECT COUNT(*) as count FROM alerts WHERE risk_level='medium'").fetchone()
-    low = conn.execute("SELECT COUNT(*) as count FROM alerts WHERE risk_level='low'").fetchone()
-    
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    high = conn.execute("SELECT COUNT(*) FROM alerts WHERE risk_level='high'").fetchone()[0]
+    medium = conn.execute("SELECT COUNT(*) FROM alerts WHERE risk_level='medium'").fetchone()[0]
+    low = conn.execute("SELECT COUNT(*) FROM alerts WHERE risk_level='low'").fetchone()[0]
+    sent = conn.execute("SELECT COUNT(*) FROM alerts WHERE alert_sent=1").fetchone()[0]
     conn.close()
-    
     return {
-        "total_analyses": total["count"],
-        "high_risk": high["count"],
-        "medium_risk": medium["count"],
-        "low_risk": low["count"]
+        "total_analyses": total,
+        "high_risk": high,
+        "medium_risk": medium,
+        "low_risk": low,
+        "alerts_sent": sent
     }
-
-@router.get("/alerts/{alert_id}")
-def get_alert(alert_id: int):
-    """Get specific alert details"""
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-    conn.close()
-    
-    if row:
-        result = dict(row)
-        if result["signals"]:
-            try:
-                result["signals"] = json.loads(result["signals"])
-            except:
-                result["signals"] = []
-        return result
-    else:
-        return {"error": "Alert not found"}
