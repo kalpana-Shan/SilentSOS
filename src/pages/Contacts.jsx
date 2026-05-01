@@ -4,7 +4,7 @@ import { API_BASE } from '../config'
 
 export default function Contacts() {
   const [contacts, setContacts] = useState([])
-  const [form, setForm] = useState({ name: '', phone: '' })
+  const [form, setForm] = useState({ name: '', email: '' })
 
   useEffect(() => {
     fetchContacts()
@@ -17,7 +17,7 @@ export default function Contacts() {
 
   const addContact = async () => {
     await axios.post(`${API_BASE}/contacts`, form)
-    setForm({ name: '', phone: '' })
+    setForm({ name: '', email: '' })
     fetchContacts()
   }
 
@@ -32,11 +32,12 @@ export default function Contacts() {
           placeholder="Name"
           className="w-full bg-gray-800 rounded-lg p-3 mb-3 text-white"
         />
-        <input
-          value={form.phone}
-          onChange={(e) => setForm({...form, phone: e.target.value})}
-          placeholder="Phone number"
-          className="w-full bg-gray-800 rounded-lg p-3 mb-3 text-white"
+       <input
+          value={form.email}
+          onChange={(e) => setForm({...form, email: e.target.value})}
+          placeholder="Email address"
+          type="email"
+          className="w-full bg-gray-800 rounded-lg p-3 mb-3 text-white placeholder-gray-500 border border-gray-700"
         />
         <button onClick={addContact} className="bg-red-600 text-white px-6 py-2 rounded-lg">
           Add Contact
@@ -46,7 +47,7 @@ export default function Contacts() {
       {contacts.map(contact => (
         <div key={contact.id} className="bg-gray-900 rounded-lg p-4 mb-3">
           <p className="font-bold">{contact.name}</p>
-          <p className="text-gray-400 text-sm">{contact.phone}</p>
+          <p className="text-gray-400 text-sm">{contact.email}</p>
         </div>
       ))}
     </div>
