@@ -23,6 +23,7 @@ def trigger_alert(alert_data: dict) -> bool:
         sent = 0
         for contact in contacts:
             if email_enabled and contact["email"]:
+                print(f"📧 Sending alert email to: {contact['email']} ({contact['name']})")
                 success = send_alert_email(
                     to_email=contact["email"],
                     contact_name=contact["name"],

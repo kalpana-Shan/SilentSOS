@@ -4,6 +4,7 @@ from typing import Optional
 from services.gemini_service import analyze_message
 from services.risk_engine import compute_final_score
 from services.alert_service import trigger_alert
+from services.email_service import send_alert_email
 from database import get_db
 from datetime import datetime
 import json
@@ -75,23 +76,48 @@ def analyze(req: MessageRequest):
         print(f"⚠️ DB save failed: {e}")
 
     # Step 5: Trigger alert if medium or high risk
-    if risk["risk_level"] in ("high", "medium") and risk["final_score"] >= 60:
+    # Alert when final_score >= 50 OR risk_level is MEDIUM or HIGH
+    print(f"🔍 Checking alert threshold — score: {risk['final_score']}, risk: {risk['risk_level']}")
+    
+    if (risk["final_score"] >= 50) or (risk["risk_level"] in ("medium", "high", "MEDIUM", "HIGH")):
+        # Fetch ALL trusted contacts and send alert emails
         try:
-            alert_sent = trigger_alert(final_result)
-            final_result["alert_sent"] = alert_sent
-            final_result["alert_channels"] = "email" if alert_sent else "demo_log"
-
+            conn = get_db()
+            contacts = conn.execute("SELECT id, name, email FROM trusted_contacts").fetchall()
+            conn.close()
+            
+            if contacts:
+                print(f"📬 Found {len(contacts)} trusted contact(s). Sending alerts...")
+                for contact in contacts:
+                    contact_email = contact[2] if isinstance(contact, tuple) else contact["email"]
+                    contact_name = contact[1] if isinstance(contact, tuple) else contact["name"]
+                    
+                    print(f"📧 Sending alert to: {contact_email}")
+                    send_alert_email(
+                        to_email=contact_email,
+                        contact_name=contact_name,
+                        alert_data=final_result
+                    )
+                
+                final_result["alert_sent"] = True
+                final_result["alert_channels"] = "email"
+            else:
+                print("⚠️ No trusted contacts found — demo mode")
+                final_result["alert_sent"] = False
+                final_result["alert_channels"] = "demo_log"
+            
             # Update DB row with sent status
             if alert_id:
                 conn = get_db()
                 conn.execute(
                     "UPDATE alerts SET alert_sent = ?, alert_channels = ? WHERE id = ?",
-                    (1 if alert_sent else 0, final_result["alert_channels"], alert_id)
+                    (1 if final_result["alert_sent"] else 0, final_result["alert_channels"], alert_id)
                 )
                 conn.commit()
                 conn.close()
-
+                
         except Exception as e:
-            print(f"⚠️ Alert trigger failed: {e}")
+            print(f"⚠️ Alert sending failed: {e}")
+            final_result["alert_sent"] = False
 
     return final_result
